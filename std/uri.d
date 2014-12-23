@@ -15,7 +15,7 @@
  *  WIKI = Phobos/StdUri
  *
  * Copyright: Copyright Digital Mars 2000 - 2009.
- * License:   <a href="http://www.boost.org/LICENSE_1_0.txt">Boost License 1.0</a>.
+ * License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
  * Authors:   $(WEB digitalmars.com, Walter Bright)
  * Source:    $(PHOBOSSRC std/_uri.d)
  */
@@ -32,15 +32,22 @@ debug(uri) private import std.stdio;
 /* ====================== URI Functions ================ */
 
 private import std.ascii;
-private import std.c.stdlib;
+private import core.stdc.stdlib;
 private import std.utf;
-import std.exception;
+private import std.traits : isSomeChar;
+import core.exception : OutOfMemoryError;
+import std.exception : assumeUnique;
 
-class URIerror : Error
+class URIException : Exception
 {
-    this()
+    @safe pure nothrow this()
     {
-        super("URI error");
+        super("URI Exception");
+    }
+
+    @safe pure nothrow this(string msg)
+    {
+        super("URI Exception: " ~ msg);
     }
 }
 
@@ -116,7 +123,7 @@ private string URI_Encode(dstring string, uint unescapedSet)
                 {
                     R2 = cast(char *)alloca(Rsize * char.sizeof);
                     if (!R2)
-                        goto LthrowURIerror;
+                        throw new OutOfMemoryError("Alloca failure");
                 }
                 R2[0..Rlen] = R[0..Rlen];
                 R = R2;
@@ -181,7 +188,7 @@ private string URI_Encode(dstring string, uint unescapedSet)
             +/
             else
             {
-                goto LthrowURIerror;        // undefined UTF-32 code
+                throw new URIException("Undefined UTF-32 code point");
             }
 
             if (Rlen + L * 3 > Rsize)
@@ -196,7 +203,7 @@ private string URI_Encode(dstring string, uint unescapedSet)
                 {
                     R2 = cast(char *)alloca(Rsize * char.sizeof);
                     if (!R2)
-                        goto LthrowURIerror;
+                        throw new OutOfMemoryError("Alloca failure");
                 }
                 R2[0..Rlen] = R[0..Rlen];
                 R = R2;
@@ -214,9 +221,6 @@ private string URI_Encode(dstring string, uint unescapedSet)
     }
 
     return R[0..Rlen].idup;
-
-LthrowURIerror:
-    throw new URIerror();
 }
 
 uint ascii2hex(dchar c)
@@ -226,7 +230,7 @@ uint ascii2hex(dchar c)
         c - 'a' + 10;
 }
 
-private dstring URI_Decode(string string, uint reservedSet)
+private dstring URI_Decode(Char)(in Char[] uri, uint reservedSet) if (isSomeChar!Char)
 {
     uint j;
     uint k;
@@ -237,8 +241,8 @@ private dstring URI_Decode(string string, uint reservedSet)
     dchar* R;
     uint Rlen;
 
-    auto len = string.length;
-    auto s = string.ptr;
+    auto len = uri.length;
+    auto s = uri.ptr;
 
     // Preallocate result buffer R guaranteed to be large enough for result
     auto Rsize = len;
@@ -249,7 +253,7 @@ private dstring URI_Decode(string string, uint reservedSet)
     {
         R = cast(dchar *)alloca(Rsize * dchar.sizeof);
         if (!R)
-            goto LthrowURIerror;
+            throw new OutOfMemoryError("Alloca failure");
     }
     Rlen = 0;
 
@@ -267,9 +271,9 @@ private dstring URI_Decode(string string, uint reservedSet)
         }
         start = k;
         if (k + 2 >= len)
-            goto LthrowURIerror;
+            throw new URIException("Unexpected end of URI");
         if (!isHexDigit(s[k + 1]) || !isHexDigit(s[k + 2]))
-            goto LthrowURIerror;
+            throw new URIException("Expected two hexadecimal digits after '%'");
         B = cast(char)((ascii2hex(s[k + 1]) << 4) + ascii2hex(s[k + 2]));
         k += 2;
         if ((B & 0x80) == 0)
@@ -283,11 +287,11 @@ private dstring URI_Decode(string string, uint reservedSet)
             for (n = 1; ; n++)
             {
                 if (n > 4)
-                    goto LthrowURIerror;
+                    throw new URIException("UTF-32 code point size too large");
                 if (((B << n) & 0x80) == 0)
                 {
                     if (n == 1)
-                        goto LthrowURIerror;
+                        throw new URIException("UTF-32 code point size too small");
                     break;
                 }
             }
@@ -296,22 +300,22 @@ private dstring URI_Decode(string string, uint reservedSet)
             V = B & ((1 << (7 - n)) - 1);   // (!!!)
 
             if (k + (3 * (n - 1)) >= len)
-                goto LthrowURIerror;
+                throw new URIException("UTF-32 unaligned String");
             for (j = 1; j != n; j++)
             {
                 k++;
                 if (s[k] != '%')
-                    goto LthrowURIerror;
+                    throw new URIException("Expected: '%'");
                 if (!isHexDigit(s[k + 1]) || !isHexDigit(s[k + 2]))
-                    goto LthrowURIerror;
+                    throw new URIException("Expected two hexadecimal digits after '%'");
                 B = cast(char)((ascii2hex(s[k + 1]) << 4) + ascii2hex(s[k + 2]));
                 if ((B & 0xC0) != 0x80)
-                    goto LthrowURIerror;
+                    throw new URIException("Incorrect UTF-32 multi-byte sequence");
                 k += 2;
                 V = (V << 6) | (B & 0x3F);
             }
             if (V > 0x10FFFF)
-                goto LthrowURIerror;
+                throw new URIException("Unknown UTF-32 code point");
             C = V;
         }
         if (C < uri_flags.length && uri_flags[C] & reservedSet)
@@ -332,10 +336,6 @@ private dstring URI_Decode(string string, uint reservedSet)
 
     // Copy array on stack to array in memory
     return R[0..Rlen].idup;
-
-
-LthrowURIerror:
-    throw new URIerror();
 }
 
 /*************************************
@@ -344,7 +344,7 @@ LthrowURIerror:
  * Escape sequences that resolve to the '#' character are not replaced.
  */
 
-string decode(string encodedURI)
+string decode(Char)(in Char[] encodedURI) if (isSomeChar!Char)
 {
     auto s = URI_Decode(encodedURI, URI_Reserved | URI_Hash);
     return std.utf.toUTF8(s);
@@ -355,7 +355,7 @@ string decode(string encodedURI)
  * escape sequences are decoded.
  */
 
-string decodeComponent(string encodedURIComponent)
+string decodeComponent(Char)(in Char[] encodedURIComponent) if (isSomeChar!Char)
 {
     auto s = URI_Decode(encodedURIComponent, 0);
     return std.utf.toUTF8(s);
@@ -366,7 +366,7 @@ string decodeComponent(string encodedURIComponent)
  * not a valid URI character is escaped. The '#' character is not escaped.
  */
 
-string encode(string uri)
+string encode(Char)(in Char[] uri) if (isSomeChar!Char)
 {
     auto s = std.utf.toUTF32(uri);
     return URI_Encode(s, URI_Reserved | URI_Hash | URI_Alpha | URI_Digit | URI_Mark);
@@ -377,7 +377,7 @@ string encode(string uri)
  * Any character not a letter, digit, or one of -_.!~*'() is escaped.
  */
 
-string encodeComponent(string uriComponent)
+string encodeComponent(Char)(in Char[] uriComponent) if (isSomeChar!Char)
 {
     auto s = std.utf.toUTF32(uriComponent);
     return URI_Encode(s, URI_Alpha | URI_Digit | URI_Mark);
@@ -386,33 +386,33 @@ string encodeComponent(string uriComponent)
 /***************************
  * Does string s[] start with a URL?
  * Returns:
- *  -1    it does not
+ *  -1   it does not
  *  len  it does, and s[0..len] is the slice of s[] that is that URL
  */
 
-size_t uriLength(string s)
+size_t uriLength(Char)(in Char[] s) if (isSomeChar!Char)
 {
     /* Must start with one of:
      *  http://
      *  https://
      *  www.
      */
-    import std.string : icmp;
+    import std.uni : icmp;
 
     size_t i;
 
     if (s.length <= 4)
-        goto Lno;
+        return -1;
 
-    if (s.length > 7 && std.string.icmp(s[0 .. 7], "http://") == 0) {
+    if (s.length > 7 && icmp(s[0 .. 7], "http://") == 0) {
         i = 7;
     }
     else
     {
-        if (s.length > 8 && std.string.icmp(s[0 .. 8], "https://") == 0)
+        if (s.length > 8 && icmp(s[0 .. 8], "https://") == 0)
             i = 8;
         else
-            goto Lno;
+            return -1;
     }
     //    if (icmp(s[0 .. 4], "www.") == 0)
     //  i = 4;
@@ -437,12 +437,9 @@ size_t uriLength(string s)
     }
     //if (!lastdot || (i - lastdot != 3 && i - lastdot != 4))
     if (!lastdot)
-        goto Lno;
+        return -1;
 
     return i;
-
-Lno:
-    return -1;
 }
 
 unittest
@@ -462,24 +459,24 @@ unittest
  * References:
  *  RFC2822
  */
-size_t emailLength(string s)
+size_t emailLength(Char)(in Char[] s) if (isSomeChar!Char)
 {
     size_t i;
 
     if (!isAlpha(s[0]))
-        goto Lno;
+        return -1;
 
     for (i = 1; 1; i++)
     {
         if (i == s.length)
-            goto Lno;
+            return -1;
         auto c = s[i];
         if (isAlphaNum(c))
             continue;
         if (c == '-' || c == '_' || c == '.')
             continue;
         if (c != '@')
-            goto Lno;
+            return -1;
         i++;
         break;
     }
@@ -502,12 +499,9 @@ size_t emailLength(string s)
         break;
     }
     if (!lastdot || (i - lastdot != 3 && i - lastdot != 4))
-        goto Lno;
+        return -1;
 
     return i;
-
-Lno:
-    return -1;
 }
 
 unittest
@@ -523,28 +517,45 @@ unittest
 {
     debug(uri) writeln("uri.encodeURI.unittest");
 
-    string s = "http://www.digitalmars.com/~fred/fred's RX.html#foo";
-    string t = "http://www.digitalmars.com/~fred/fred's%20RX.html#foo";
+    string source = "http://www.digitalmars.com/~fred/fred's RX.html#foo";
+    string target = "http://www.digitalmars.com/~fred/fred's%20RX.html#foo";
 
-    auto r = encode(s);
-    debug(uri) writefln("r = '%s'", r);
-    assert(r == t);
-    r = decode(t);
-    debug(uri) writefln("r = '%s'", r);
-    assert(r == s);
+    auto result = encode(source);
+    debug(uri) writefln("result = '%s'", result);
+    assert(result == target);
+    result = decode(target);
+    debug(uri) writefln("result = '%s'", result);
+    assert(result == source);
 
-    r = encode( decode("%E3%81%82%E3%81%82") );
-    assert(r == "%E3%81%82%E3%81%82");
+    result = encode(decode("%E3%81%82%E3%81%82"));
+    assert(result == "%E3%81%82%E3%81%82");
 
-    r = encodeComponent("c++");
-    assert(r == "c%2B%2B");
+    result = encodeComponent("c++");
+    assert(result == "c%2B%2B");
 
     auto str = new char[10_000_000];
     str[] = 'A';
-    r = encodeComponent(assumeUnique(str));
-    foreach (char c; r)
+    result = encodeComponent(str);
+    foreach (char c; result)
         assert(c == 'A');
 
-    r = decode("%41%42%43");
-    debug(uri) writeln(r);
+    result = decode("%41%42%43");
+    debug(uri) writeln(result);
+
+    import std.typetuple : TypeTuple;
+    foreach (StringType; TypeTuple!(char[], wchar[], dchar[], string, wstring, dstring))
+    {
+        import std.conv : to;
+        StringType decoded1 = source.to!StringType;
+        string encoded1 = encode(decoded1);
+        assert(decoded1 == source.to!StringType); // check that `decoded1` wasn't changed
+        assert(encoded1 == target);
+        assert(decoded1 == decode(encoded1).to!StringType);
+
+        StringType encoded2 = target.to!StringType;
+        string decoded2 = decode(encoded2);
+        assert(encoded2 == target.to!StringType); // check that `encoded2` wasn't changed
+        assert(decoded2 == source);
+        assert(encoded2 == encode(decoded2).to!StringType);
+    }
 }
